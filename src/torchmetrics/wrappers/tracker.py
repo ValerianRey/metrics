@@ -21,6 +21,7 @@ from torch.nn import ModuleList
 from torchmetrics.collections import MetricCollection
 from torchmetrics.metric import Metric
 from torchmetrics.utilities.prints import rank_zero_warn
+from torchmetrics.wrappers import MultioutputWrapper
 
 
 class MetricTracker(ModuleList):
@@ -132,7 +133,7 @@ class MetricTracker(ModuleList):
         self._check_for_increment("compute")
         return self[-1].compute()
 
-    def compute_all(self) -> Tensor:
+    def compute_all(self) -> Union[Tensor, Dict[str, Tensor], List[Tensor]]:
         """Compute the metric value for all tracked metrics."""
         self._check_for_increment("compute_all")
         # The i!=0 accounts for the self._base_metric should be ignored
@@ -140,6 +141,10 @@ class MetricTracker(ModuleList):
         if isinstance(self._base_metric, MetricCollection):
             keys = res[0].keys()
             return {k: torch.stack([r[k] for r in res], dim=0) for k in keys}
+        if isinstance(self._base_metric, MultioutputWrapper):
+            return [
+                torch.stack([res[i][j] for i in range(len(res))], dim=0) for j in range(len(self._base_metric.metrics))
+            ]
         return torch.stack(res, dim=0)
 
     def reset(self) -> None:
@@ -156,10 +161,12 @@ class MetricTracker(ModuleList):
     ) -> Union[
         None,
         float,
-        Tuple[int, float],
+        Tuple[float, int],
         Tuple[None, None],
         Dict[str, Union[float, None]],
-        Tuple[Dict[str, Union[int, None]], Dict[str, Union[float, None]]],
+        Tuple[Dict[str, Union[float, None]], Dict[str, Union[int, None]]],
+        List[Union[float, None]],
+        Tuple[List[Union[float, None]], List[Union[int, None]]],
     ]:
         """Returns the highest metric out of all tracked.
 
@@ -169,7 +176,31 @@ class MetricTracker(ModuleList):
         Returns:
             The best metric value, and optionally the time-step.
         """
-        if isinstance(self._base_metric, Metric):
+        if isinstance(self._base_metric, MultioutputWrapper):
+            res = self.compute_all()
+            maximize = self.maximize if isinstance(self.maximize, list) else len(res) * [self.maximize]
+            value, idx = [], []
+            for i, v in enumerate(res):
+                try:
+                    fn = torch.max if maximize[i] else torch.min
+                    out = fn(v, 0)
+                    value.append(out[0].item())
+                    idx.append(out[1].item())
+                except ValueError as error:
+                    rank_zero_warn(
+                        f"Encountered the following error when trying to get the best metric: {error}"
+                        "this is probably due to the 'best' not being defined for this metric."
+                        "Returning `None` instead.",
+                        UserWarning,
+                    )
+                    value.append(None)
+                    idx.append(None)
+
+            if return_step:
+                return value, idx
+            return value
+
+        elif isinstance(self._base_metric, Metric):
             fn = torch.max if self.maximize else torch.min
             try:
                 value, idx = fn(self.compute_all(), 0)
