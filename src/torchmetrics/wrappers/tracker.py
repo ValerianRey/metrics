@@ -158,8 +158,12 @@ class MetricTracker(ModuleList):
         float,
         Tuple[float, int],
         Tuple[None, None],
+        List[float],
+        Tuple[List[float], List[int]],
         Dict[str, Union[float, None]],
         Tuple[Dict[str, Union[float, None]], Dict[str, Union[int, None]]],
+        Dict[str, Union[List[float], None]],
+        Tuple[Dict[str, Union[List[float], None]], Dict[str, Union[List[int], None]]],
     ]:
         """Returns the highest metric out of all tracked.
 
@@ -173,9 +177,16 @@ class MetricTracker(ModuleList):
             fn = torch.max if self.maximize else torch.min
             try:
                 value, idx = fn(self.compute_all(), 0)
+                if len(value.shape) > 0:
+                    value = [v.item() for v in value]
+                    idx = [index.item() for index in idx]
+                else:
+                    value = value.item()
+                    idx = idx.item()
+
                 if return_step:
-                    return value.item(), idx.item()
-                return value.item()
+                    return value, idx
+                return value
             except ValueError as error:
                 rank_zero_warn(
                     f"Encountered the following error when trying to get the best metric: {error}"
@@ -195,7 +206,11 @@ class MetricTracker(ModuleList):
                 try:
                     fn = torch.max if maximize[i] else torch.min
                     out = fn(v, 0)
-                    value[k], idx[k] = out[0].item(), out[1].item()
+                    if len(out[0].shape) > 0:
+                        value[k] = [v.item() for v in out[0]]
+                        idx[k] = [index.item() for index in out[1]]
+                    else:
+                        value[k], idx[k] = out[0].item(), out[1].item()
                 except ValueError as error:
                     rank_zero_warn(
                         f"Encountered the following error when trying to get the best metric for metric {k}:"
