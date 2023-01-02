@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Added support for plotting of metrics through `.plot()` method ([#1328](https://github.com/Lightning-AI/metrics/pull/1328))
+- Added support for `MetricTracker` of `MultioutputWrapper` and `MetricTracker` of `MetricCollection` of `MultioutputWrapper`s ([#1409](https://github.com/Lightning-AI/metrics/issues/1409))
 
 
 ### Changed
