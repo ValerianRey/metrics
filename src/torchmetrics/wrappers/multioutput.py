@@ -1,5 +1,5 @@
 from copy import deepcopy
-from typing import Any, List, Tuple
+from typing import Any, List, Tuple, Union
 
 import torch
 from torch import Tensor
@@ -54,6 +54,9 @@ class MultioutputWrapper(Metric):
             If ``True``, will squeeze the 1-item dimensions left after ``index_select`` is applied.
             This is sometimes unnecessary but harmless for metrics such as `R2Score` but useful
             for certain classification metrics that can't handle additional 1-item dimensions.
+        stack_outputs:
+            If ``True``, will stack the output as a Tensor of higher dimension rather than keeping it as a list of
+            Tensors. This is necessary when used inside a `MetricTracker`.
 
     Example:
 
@@ -76,12 +79,14 @@ class MultioutputWrapper(Metric):
         output_dim: int = -1,
         remove_nans: bool = True,
         squeeze_outputs: bool = True,
+        stack_outputs: bool = False,
     ):
         super().__init__()
         self.metrics = ModuleList([deepcopy(base_metric) for _ in range(num_outputs)])
         self.output_dim = output_dim
         self.remove_nans = remove_nans
         self.squeeze_outputs = squeeze_outputs
+        self.stack_outputs = stack_outputs
 
     def _get_args_kwargs_by_output(self, *args: Tensor, **kwargs: Tensor) -> List[Tuple[Tensor, Tensor]]:
         """Get args and kwargs reshaped to be output-specific and (maybe) having NaNs stripped out."""
@@ -110,9 +115,13 @@ class MultioutputWrapper(Metric):
         for metric, (selected_args, selected_kwargs) in zip(self.metrics, reshaped_args_kwargs):
             metric.update(*selected_args, **selected_kwargs)
 
-    def compute(self) -> List[Tensor]:
+    def compute(self) -> Union[List[Tensor], Tensor]:
         """Compute metrics."""
-        return [m.compute() for m in self.metrics]
+        list_result = [m.compute() for m in self.metrics]
+        if self.stack_outputs:
+            return torch.stack(list_result, dim=0)
+        else:
+            return list_result
 
     @torch.jit.unused
     def forward(self, *args: Any, **kwargs: Any) -> Any:
