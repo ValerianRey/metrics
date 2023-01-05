@@ -142,11 +142,20 @@ class MetricTracker(ModuleList):
         res = [metric.compute() for i, metric in enumerate(self) if i != 0]
         if isinstance(self._base_metric, MetricCollection):
             keys = res[0].keys()
-            return {k: torch.stack([r[k] for r in res], dim=0) for k in keys}
+            d = {}
+            for k in keys:
+                if isinstance(res[0][k], Tensor):
+                    d[k] = torch.stack([r[k] for r in res], dim=0)
+                elif isinstance(res[0][k], list):
+                    d[k] = self._stack_multioutput(multioutput_results=[r[k] for r in res])
+                else:
+                    raise ValueError(
+                        f"Expected each metric's `compute` method to return a Tensor or a list of"
+                        f" Tensors but got {type(res[0][k])}"
+                    )
+            return d
         if isinstance(self._base_metric, MultioutputWrapper):
-            return [
-                torch.stack([res[i][j] for i in range(len(res))], dim=0) for j in range(len(self._base_metric.metrics))
-            ]
+            return self._stack_multioutput(multioutput_results=res)
         return torch.stack(res, dim=0)
 
     def reset(self) -> None:
@@ -165,10 +174,12 @@ class MetricTracker(ModuleList):
         float,
         Tuple[float, int],
         Tuple[None, None],
+        List[float],
+        Tuple[List[float], List[int]],
         Dict[str, Union[float, None]],
         Tuple[Dict[str, Union[float, None]], Dict[str, Union[int, None]]],
-        List[Union[float, None]],
-        Tuple[List[Union[float, None]], List[Union[int, None]]],
+        Dict[str, Union[List[float], None]],
+        Tuple[Dict[str, Union[List[float], None]], Dict[str, Union[List[int], None]]],
     ]:
         """Returns the highest metric out of all tracked.
 
@@ -178,57 +189,21 @@ class MetricTracker(ModuleList):
         Returns:
             The best metric value, and optionally the time-step.
         """
-        if isinstance(self._base_metric, MultioutputWrapper):
-            res = self.compute_all()
-            maximize = self.maximize if isinstance(self.maximize, list) else len(res) * [self.maximize]
-            value, idx = [], []
-            for i, v in enumerate(res):
-                try:
-                    fn = torch.max if maximize[i] else torch.min
-                    out = fn(v, 0)
-                    value.append(out[0].item())
-                    idx.append(out[1].item())
-                except ValueError as error:
-                    rank_zero_warn(
-                        f"Encountered the following error when trying to get the best metric: {error}"
-                        "this is probably due to the 'best' not being defined for this metric."
-                        "Returning `None` instead.",
-                        UserWarning,
-                    )
-                    value.append(None)
-                    idx.append(None)
-
-            if return_step:
-                return value, idx
-            return value
-
-        elif isinstance(self._base_metric, Metric):
-            fn = torch.max if self.maximize else torch.min
-            try:
-                value, idx = fn(self.compute_all(), 0)
-                if return_step:
-                    return value.item(), idx.item()
-                return value.item()
-            except ValueError as error:
-                rank_zero_warn(
-                    f"Encountered the following error when trying to get the best metric: {error}"
-                    "this is probably due to the 'best' not being defined for this metric."
-                    "Returning `None` instead.",
-                    UserWarning,
-                )
-                if return_step:
-                    return None, None
-                return None
-
-        else:  # this is a metric collection
-            res = self.compute_all()
+        res = self.compute_all()
+        if isinstance(self._base_metric, MetricCollection):
             maximize = self.maximize if isinstance(self.maximize, list) else len(res) * [self.maximize]
             value, idx = {}, {}
             for i, (k, v) in enumerate(res.items()):
+                fn = torch.max if maximize[i] else torch.min
                 try:
-                    fn = torch.max if maximize[i] else torch.min
-                    out = fn(v, 0)
-                    value[k], idx[k] = out[0].item(), out[1].item()
+                    # MultioutputWrapper
+                    if isinstance(v, list):
+                        out = [fn(v_, 0) for v_ in v]
+                        value[k], idx[k] = [o[0].item() for o in out], [o[1].item() for o in out]
+                    # Simple Metric
+                    else:
+                        out = fn(v, 0)
+                        value[k], idx[k] = out[0].item(), out[1].item()
                 except ValueError as error:
                     rank_zero_warn(
                         f"Encountered the following error when trying to get the best metric for metric {k}:"
@@ -238,10 +213,48 @@ class MetricTracker(ModuleList):
                     )
                     value[k], idx[k] = None, None
 
-            if return_step:
-                return value, idx
-            return value
+        elif isinstance(self._base_metric, MultioutputWrapper):
+            fn = torch.max if self.maximize else torch.min
+            try:
+                out = [fn(v, 0) for v in res]
+                value, idx = [o[0].item() for o in out], [o[1].item() for o in out]
+            except ValueError as error:
+                rank_zero_warn(
+                    f"Encountered the following error when trying to get the best metric: {error}"
+                    "this is probably due to the 'best' not being defined for this metric."
+                    "Returning `None` instead.",
+                    UserWarning,
+                )
+                value, idx = None, None
+
+        # Simple Metric
+        else:
+            fn = torch.max if self.maximize else torch.min
+            try:
+                out = fn(res, 0)
+                value, idx = out[0].item(), out[1].item()
+            except ValueError as error:
+                rank_zero_warn(
+                    f"Encountered the following error when trying to get the best metric: {error}"
+                    "this is probably due to the 'best' not being defined for this metric."
+                    "Returning `None` instead.",
+                    UserWarning,
+                )
+                value, idx = None, None
+
+        if return_step:
+            return value, idx
+        return value
 
     def _check_for_increment(self, method: str) -> None:
         if not self._increment_called:
             raise ValueError(f"`{method}` cannot be called before `.increment()` has been called")
+
+    @staticmethod
+    def _stack_multioutput(multioutput_results: List[List[Tensor]]):
+        stacked_results = []
+        for i in range(len(multioutput_results[0])):
+            stacked_results.append(
+                torch.stack([multioutput_results[j][i] for j in range(len(multioutput_results))], dim=0)
+            )
+        return stacked_results
