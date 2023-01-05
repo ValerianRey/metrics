@@ -98,6 +98,21 @@ def test_raises_error_if_increment_not_called(method, method_input):
         (
             MultioutputWrapper(MeanSquaredError(), num_outputs=2),
             (torch.randn(50, 2), torch.randn(50, 2)),
+            False,
+        ),
+        (
+            MetricCollection(
+                {
+                    "MSE": MultioutputWrapper(MeanSquaredError(), num_outputs=2),
+                    "MAE": MultioutputWrapper(MeanAbsoluteError(), num_outputs=2),
+                }
+            ),
+            (torch.randn(50, 2), torch.randn(50, 2)),
+            [False, False],
+        ),
+        (
+            MetricCollection([MultioutputWrapper(MeanSquaredError(), num_outputs=2), MeanAbsoluteError()]),
+            (torch.randn(50, 2), torch.randn(50, 2)),
             [False, False],
         ),
     ],
@@ -117,10 +132,18 @@ def test_tracker(base_metric, metric_input, maximize):
         val = tracker.compute()
         if isinstance(val, dict):
             for v in val.values():
-                assert v != 0.0
+                # MetricCollection of MultioutputWrappers
+                if isinstance(v, list):
+                    for v_ in v:
+                        assert v_ != 0.0
+                # MetricCollection of simple Metrics
+                else:
+                    assert v != 0.0
+        # MultioutputWrapper
         elif isinstance(val, list):
             for v in val:
                 assert v != 0.0
+        # Simple Metric
         else:
             assert val != 0.0
         assert tracker.n_steps == i + 1
@@ -130,10 +153,18 @@ def test_tracker(base_metric, metric_input, maximize):
     all_computed_val = tracker.compute_all()
     if isinstance(all_computed_val, dict):
         for v in all_computed_val.values():
-            assert v.numel() == 5
+            # MetricCollection of MultioutputWrappers
+            if isinstance(v, list):
+                for v_ in v:
+                    assert v_.numel() == 5
+            # MetricCollection of simple Metrics
+            else:
+                assert v.numel() == 5
+    # MultioutputWrapper
     elif isinstance(all_computed_val, list):
         for v in all_computed_val:
             assert v.numel() == 5
+    # Simple Metric
     else:
         assert all_computed_val.numel() == 5
 
@@ -141,12 +172,21 @@ def test_tracker(base_metric, metric_input, maximize):
     val, idx = tracker.best_metric(return_step=True)
     if isinstance(val, dict):
         for v, i in zip(val.values(), idx.values()):
-            assert v != 0.0
-            assert i in list(range(5))
+            # MetricCollection of MultioutputWrappers
+            if isinstance(v, list):
+                for v_, i_ in zip(v, i):
+                    assert v_ != 0.0
+                    assert i_ in list(range(5))
+            # MetricCollection of simple Metrics
+            else:
+                assert v != 0.0
+                assert i in list(range(5))
+    # MultioutputWrapper
     elif isinstance(val, list):
         for v, i in zip(val, idx):
             assert v != 0.0
             assert i in list(range(5))
+    # Simple Metric
     else:
         assert val != 0.0
         assert idx in list(range(5))
